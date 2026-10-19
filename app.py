@@ -6,17 +6,15 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(layout="wide", page_title="MiniGarázs Katalógus")
 st.title("🚗 Garázs + TTTT")
 
-# Kényszerítjük a memóriatörlést a friss adatokért
 st.cache_data.clear()
 
-# Kapcsolódás a Google Táblázathoz a Secrets-ben megadott link alapján
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    # ÚJÍTÁS: Nem adunk meg fülnevet, így automatikusan a legelső (bal szélső) fület olvassa be!
-    df = conn.read()
-    df.columns = df.columns.str.strip()  # Megtisztítjuk a fejléceket a szóközöktől
-except Exception as e:
-    df = pd.DataFrame(columns=["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Base64", "Auto_Data_Link"])
+    # Beolvassuk a legelső fület az átalakításhoz, de a Garazs fülre mentünk
+    df = conn.read(worksheet="Garazs")
+    df.columns = df.columns.str.strip()
+except Exception:
+    df = pd.DataFrame(columns=["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Bazis64", "Auto_Data_Link"])
 
 # ---- OLDALSÁV: ÚJ AUTÓ REGISZTRÁLÁSA ----
 st.sidebar.header("➕ Új... autó hozzáadása")
@@ -35,7 +33,6 @@ if st.sidebar.button("💾 Autó mentése a Garázsba"):
             bytes_data = uploaded_file.getvalue()
             img_base64 = base64.b64encode(bytes_data).decode("utf-8")
         
-        # Új autó sorának létrehozása
         new_row = pd.DataFrame([{
             "Tulajdonos": owner, 
             "Autó márkája": car_brand, 
@@ -45,38 +42,82 @@ if st.sidebar.button("💾 Autó mentése a Garázsba"):
             "Auto_Data_Link": auto_data_url
         }])
         
-        # Hozzáadjuk az online adathoz és visszamentjük a Google Táblázatba
         df = pd.concat([df, new_row], ignore_index=True)
-        conn.update(data=df)
+        conn.update(data=df, worksheet="Garazs")
         st.sidebar.success("Sikeresen elmentve!")
         st.rerun()
     else:
         st.sidebar.error("Kérlek, add meg a márkát és típust!")
 
+# ---- 🛠️ AUTOMATIKUS ADAT-ÁTHELYEZŐ (MIGRÁCIÓ) ----
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Rendszereszközök")
+st.sidebar.warning("Figyelem: Az alábbi gomb átmásolja az összes autót a régi táblázatból a Garázs fülre!")
+
+if st.sidebar.button("🔄 Régi autók automatikus másolása"):
+    try:
+        # Beolvassuk a legelső (alapértelmezett) munkalapot, ahol a függőleges adatok vannak
+        regi_df = conn.read()
+        
+        # Az első oszlop tartalmazza a tulajdonságokat (Ár, Tömeg, Származás, stb.)
+        # A többi oszlop fejlécében vannak az autók nevei
+        regi_autok = regi_df.columns[1:].tolist()
+        
+        uj_autok_listaja = []
+        
+        for auto in regi_autok:
+            # Megpróbáljuk kiszedni az évjáratot vagy a származást a függőleges listából, ha van
+            # Feltételezzük, hogy az autó neve pl: "Alfa Romeo Giulia (2016)" vagy hasonló, 
+            # de ha a táblázatban van fix sor, onnan is olvashatjuk.
+            
+            # Kettészedjük a nevet Márkára és Típusra az első szóköz alapján
+            nev_reszek = auto.strip().split(" ", 1)
+            marka = nev_reszek[0] if len(nev_reszek) > 0 else "Ismeretlen"
+            tipus = nev_reszek[1] if len(nev_reszek) > 1 else ""
+            
+            # Megkeressük a 'Származás' vagy 'Évjárat' sort a régi táblázatban az adott autó oszlopában
+            szarmazas_sor = regi_df[regi_df.iloc[:, 0].astype(str).str.contains("Származás", na=False, case=False)]
+            evjarat_ertek = ""
+            if not szarmazas_sor.empty:
+                evjarat_ertek = str(szarmazas_sor[auto].values[0]) # Átmenetileg a származást vagy egyéb adatot tesszük be infónak
+            
+            uj_autok_listaja.append({
+                "Tulajdonos": "Tomi",  # Alapértelmezett gazda, a felületen utólag módosítható
+                "Autó márkája": marka,
+                "Autó típusa": tipus,
+                "Évjárat": evjarat_ertek,
+                "Kép_Bazis64": "",
+                "Auto_Data_Link": ""
+            })
+        
+        migralt_df = pd.DataFrame(uj_autok_listaja)
+        
+        # Összefűzzük a jelenlegi Garazs fül tartalmával, hogy semmi ne vesszen el
+        vegleges_df = pd.concat([df, migralt_df], ignore_index=True).drop_duplicates(subset=["Autó márkája", "Autó típusa"])
+        
+        # Elmentjük a Google Táblázat Garazs fülére
+        conn.update(data=vegleges_df, worksheet="Garazs")
+        st.sidebar.success(f"Sikeresen átmásolva {len(uj_autok_listaja)} db autó!")
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"Hiba az áthelyezés során: {e}")
+
 # ---- FŐOLDAL: GYŰJTEMÉNY MEGJELENÍTÉSE ----
 st.subheader("A gyűjtemény")
 
-# Megtisztítjuk a betöltött táblázat oszlopneveit, hogy biztosan egyezzenek
 if not df.empty:
     df.columns = [str(col).strip() for col in df.columns]
 
-# Biztosítjuk a szükséges oszlopok meglétét, ha a táblázat üres lenne
 szukseges_oszlopok = ["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Bazis64", "Auto_Data_Link"]
 for col in szukseges_oszlopok:
     if col not in df.columns:
-        # Ha ékezetes formában van a táblázatban, átnevezzük a kódhoz
-        if col == "Kép_Bazis64" and "Kép_Bázis64" in df.columns:
-            df.rename(columns={"Kép_Bázis64": "Kép_Bazis64"}, inplace=True)
-        else:
-            df[col] = ""
+        df[col] = ""
 
-# Kiszűrjük a teljesen üres sorokat
 df_tisztitott = df[df["Autó márkája"].notna() & (df["Autó márkája"].astype(str).str.strip() != "")]
 
 if df_tisztitott.empty:
     st.info("A garázs listája még üres. Nyisd meg a bal oldali menüt a nyíllal (>), töltsd ki az adatokat, és mentsd el az első kisautódat!")
 else:
-    # Szűrés tulajdonos szerint
     tulajok = list(set([str(auto).strip() for auto in df_tisztitott["Tulajdonos"].dropna() if str(auto).strip() != ""]))
     view_filter = st.selectbox("Szűrés tulajdonos szerint:", ["Mindegyik"] + tulajok)
     
@@ -91,7 +132,6 @@ else:
             st.markdown(f"**{row['Autó típusa']}**")
             st.caption(f"📅 Évjárat: {row['Évjárat']} | 👤: {row['Tulajdonos']}")
             
-            # Fénykép megjelenítése
             img_val = row.get('Kép_Bazis64', '')
             if pd.notna(img_val) and str(img_val).strip() != "":
                 try:
@@ -102,7 +142,6 @@ else:
             else:
                 st.caption("ℹ️ Nincs saját fénykép feltöltve.")
             
-            # Link gomb
             link_val = row.get('Auto_Data_Link', '')
             if pd.notna(link_val) and str(link_val).startswith("http"):
                 st.link_button("📊 Technikai adatok / Részletek", str(link_val))
