@@ -12,18 +12,46 @@ st.cache_data.clear()
 # Kapcsolódás a Google Táblázathoz a Secrets-ben megadott link alapján
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    # Automatikusan a legelső (bal szélső) fület olvassa be, ha nincs megadva specifikus név
+    # ÚJÍTÁS: Nem adunk meg fülnevet, így automatikusan a legelső (bal szélső) fület olvassa be!
     df = conn.read()
     df.columns = df.columns.str.strip()  # Megtisztítjuk a fejléceket a szóközöktől
 except Exception as e:
-    df = pd.DataFrame(columns=["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Bazis64", "Auto_Data_Link"])
+    df = pd.DataFrame(columns=["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Base64", "Auto_Data_Link"])
 
-# ---- OLDALSÁV: INFORMÁCIÓK ----
-st.sidebar.header("ℹ️ Navigáció")
-st.sidebar.info("💡 Az új autókat és azok adatait közvetlenül a Google Táblázatban tudjátok bővíteni, az alkalmazás pedig automatikusan megjeleníti őket itt!")
+# ---- OLDALSÁV: ÚJ AUTÓ REGISZTRÁLÁSA ----
+st.sidebar.header("➕ Új... autó hozzáadása")
+owner = st.sidebar.selectbox("Tulajdonos", ["Gergő", "Barni", "Tomi", "Imola"])
+car_brand = st.sidebar.text_input("Autó márkája")
+car_type = st.sidebar.text_input("Autó típusa")
+year = st.sidebar.text_input("Évjárat")
 
-TABLAZAT_LINK = "https://google.com"
-st.sidebar.link_button("📝 Google Táblázat megnyitása", TABLAZAT_LINK)
+uploaded_file = st.sidebar.file_uploader("Fénykép feltöltése", type=["png", "jpg", "jpeg"])
+auto_data_url = st.sidebar.text_input("Link", placeholder="https://...")
+
+if st.sidebar.button("💾 Autó mentése a Garázsba"):
+    if car_brand and car_type:
+        img_base64 = ""
+        if uploaded_file is not None:
+            bytes_data = uploaded_file.getvalue()
+            img_base64 = base64.b64encode(bytes_data).decode("utf-8")
+        
+        # Új autó sorának létrehozása
+        new_row = pd.DataFrame([{
+            "Tulajdonos": owner, 
+            "Autó márkája": car_brand, 
+            "Autó típusa": car_type, 
+            "Évjárat": year,
+            "Kép_Bazis64": img_base64,
+            "Auto_Data_Link": auto_data_url
+        }])
+        
+        # Hozzáadjuk az online adathoz és visszamentjük a Google Táblázatba
+        df = pd.concat([df, new_row], ignore_index=True)
+        conn.update(data=df)
+        st.sidebar.success("Sikeresen elmentve!")
+        st.rerun()
+    else:
+        st.sidebar.error("Kérlek, add meg a márkát és típust!")
 
 # ---- FŐOLDAL: GYŰJTEMÉNY MEGJELENÍTÉSE ----
 st.subheader("A gyűjtemény")
@@ -32,10 +60,11 @@ st.subheader("A gyűjtemény")
 if not df.empty:
     df.columns = [str(col).strip() for col in df.columns]
 
-# Biztosítjuk a szükséges oszlopok megnyitását
+# Biztosítjuk a szükséges oszlopok meglétét, ha a táblázat üres lenne
 szukseges_oszlopok = ["Tulajdonos", "Autó márkája", "Autó típusa", "Évjárat", "Kép_Bazis64", "Auto_Data_Link"]
 for col in szukseges_oszlopok:
     if col not in df.columns:
+        # Ha ékezetes formában van a táblázatban, átnevezzük a kódhoz
         if col == "Kép_Bazis64" and "Kép_Bázis64" in df.columns:
             df.rename(columns={"Kép_Bázis64": "Kép_Bazis64"}, inplace=True)
         else:
@@ -45,7 +74,7 @@ for col in szukseges_oszlopok:
 df_tisztitott = df[df["Autó márkája"].notna() & (df["Autó márkája"].astype(str).str.strip() != "")]
 
 if df_tisztitott.empty:
-    st.info("A garázs listája még üres a Google Táblázatban.")
+    st.info("A garázs listája még üres. Nyisd meg a bal oldali menüt a nyíllal (>), töltsd ki az adatokat, és mentsd el az első kisautódat!")
 else:
     # Szűrés tulajdonos szerint
     tulajok = list(set([str(auto).strip() for auto in df_tisztitott["Tulajdonos"].dropna() if str(auto).strip() != ""]))
