@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import base64
-import urllib.parse
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(layout="wide", page_title="MiniGarázs Katalógus")
@@ -37,8 +36,6 @@ if st.sidebar.button("💾 Autó mentése a Garázsba"):
             bytes_data = uploaded_file.getvalue()
             img_base64 = base64.b64encode(bytes_data).decode("utf-8")
         
-        # Mivel a felhőből a közvetlen írás zárolva van, generálunk egy okos segédlinket,
-        # ami megkönnyíti a táblázatba való kézi bevitelt, vagy használhatjátok a közvetlen megnyitást
         st.sidebar.success("Adatok előkészítve! Kattints az alábbi gombra a táblázat bővítéséhez:")
         st.sidebar.link_button("📝 Adatok átvitele a Google Táblázatba", TABLAZAT_LINK)
     else:
@@ -63,53 +60,88 @@ for col in szukseges_oszlopok:
             df[col] = ""
 
 # Kiszűrjük a teljesen üres sorokat
-df_tisztitott = df[df["Autó márkája"].notna() & (df["Autó márkája"].astype(str).str.strip() != "")]
+df_tisztitott = df[df["Autó márkája"].notna() & (df["Autó márkája"].astype(str).str.strip() != "")].copy()
 
 if df_tisztitott.empty:
     st.info("A garázs listája még üres. Add hozzá az első autót a bal oldali menüben (>)!")
 else:
-    # Szűrés tulajdonos szerint
-    tulajok = list(set([str(auto).strip() for auto in df_tisztitott["Tulajdonos"].dropna() if str(auto).strip() != ""]))
-    view_filter = st.selectbox("Szűrés tulajdonos szerint:", ["Mindegyik"] + tulajok)
-    
-    filtered_cars = df_tisztitott if view_filter == "Mindegyik" else df_tisztitott[df_tisztitott["Tulajdonos"] == view_filter]
+    # Adatok megtisztítása az értelmes szűréshez (eltüntetjük a .0-ákat és a nan-okat)
+    df_tisztitott["Tulajdonos"] = df_tisztitott["Tulajdonos"].fillna("—").astype(str).str.replace(".0", "", regex=False).str.strip()
+    df_tisztitott["Autó márkája"] = df_tisztitott["Autó márkája"].fillna("—").astype(str).str.strip()
+    df_tisztitott["Autó típusa"] = df_tisztitott["Autó típusa"].fillna("—").astype(str).str.strip()
+    df_tisztitott["Évjárat"] = df_tisztitott["Évjárat"].fillna("—").astype(str).str.replace(".0", "", regex=False).str.strip()
 
-    cols = st.columns(4)
-    megjelenitett_autok = 0
+    # Készítünk 4 oszlopot a szűrőknek egymás mellé
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
     
-    for idx, row in filtered_cars.iterrows():
-        with cols[megjelenitett_autok % 4]:
-            st.markdown(f"### {row['Autó márkája']}")
-            st.markdown(f"**{row['Autó típusa']}**")
-            st.caption(f"📅 Évjárat: {row['Évjárat']} | 👤: {row['Tulajdonos']}")
-            
-            # Fénykép kezelése és megjelenítése
-            has_image = False
-            img_val = row.get('Kép_Bazis64', '')
-            if pd.notna(img_val) and str(img_val).strip() != "":
-                if str(img_val).startswith("http"):
-                    st.image(str(img_val), use_container_width=True)
-                    has_image = True
-                else:
-                    try:
-                        img_bytes = base64.b64decode(str(img_val).strip())
-                        st.image(img_bytes, use_container_width=True)
+    with filter_col1:
+        tulajok = ["Mindegyik"] + sorted(list(set([t for t in df_tisztitott["Tulajdonos"] if t != "nan" and t != ""])))
+        filter_owner = st.selectbox("👤 Szűrés tulajdonos szerint:", tulajok)
+        
+    with filter_col2:
+        markak = ["Mindegyik"] + sorted(list(set([m for m in df_tisztitott["Autó márkája"] if m != ""])))
+        filter_brand = st.selectbox("🏭 Szűrés márka szerint:", markak)
+        
+    with filter_col3:
+        tipusok = ["Mindegyik"] + sorted(list(set([t for t in df_tisztitott["Autó típusa"] if t != ""])))
+        filter_type = st.selectbox("🏎️ Szűrés autótípus szerint:", tipusok)
+        
+    with filter_col4:
+        evjaratok = ["Mindegyik"] + sorted(list(set([e for e in df_tisztitott["Évjárat"] if e != "nan" and e != ""])), reverse=True)
+        filter_year = st.selectbox("📅 Szűrés évjárat szerint:", evjaratok)
+
+    # Szűrések alkalmazása lépésről lépésre
+    filtered_cars = df_tisztitott
+    if filter_owner != "Mindegyik":
+        filtered_cars = filtered_cars[filtered_cars["Tulajdonos"] == filter_owner]
+    if filter_brand != "Mindegyik":
+        filtered_cars = filtered_cars[filtered_cars["Autó márkája"] == filter_brand]
+    if filter_type != "Mindegyik":
+        filtered_cars = filtered_cars[filtered_cars["Autó típusa"] == filter_type]
+    if filter_year != "Mindegyik":
+        filtered_cars = filtered_cars[filtered_cars["Évjárat"] == filter_year]
+
+    st.markdown("---")
+
+    # Megjelenítés modern kártyarácsban
+    if filtered_cars.empty:
+        st.info("Nincs a megadott szűrési feltételeknek megfelelő autó a garázsban.")
+    else:
+        cols = st.columns(4)
+        megjelenitett_autok = 0
+        
+        for idx, row in filtered_cars.iterrows():
+            with cols[megjelenitett_autok % 4]:
+                st.markdown(f"### {row['Autó márkája']}")
+                st.markdown(f"**{row['Autó típusa']}**")
+                st.caption(f"📅 Évjárat: {row['Évjárat']} | 👤: {row['Tulajdonos']}")
+                
+                # Fénykép kezelése és megjelenítése
+                has_image = False
+                img_val = row.get('Kép_Bazis64', '')
+                if pd.notna(img_val) and str(img_val).strip() != "" and str(img_val).strip() != "nan":
+                    if str(img_val).startswith("http"):
+                        st.image(str(img_val), use_container_width=True)
                         has_image = True
-                    except Exception:
-                        st.caption("ℹ️ Fénykép megjelenítési hiba.")
-            
-            # UTÓLAGOS FÉNYKÉPFELTÖLTÉS OPCIÓ: Ha nincs fénykép, felajánljuk a pótlást
-            if not has_image:
-                st.warning("⚠️ Hiányzik a fénykép!")
-                st.link_button("📷 Fénykép pótlása a Táblázatban", TABLAZAT_LINK)
-            
-            # Link gomb
-            link_val = row.get('Auto_Data_Link', '')
-            if pd.notna(link_val) and str(link_val).startswith("http"):
-                st.link_button("📊 Technikai adatok / Részletek", str(link_val))
-            else:
-                # UTÓLAGOS LINKPÓTLÓ OPCIÓ
-                st.link_button("🔗 Link hozzáadása", TABLAZAT_LINK)
-            
-            st.markdown("---")
-            megjelenitett_autok += 1
+                    else:
+                        try:
+                            img_bytes = base64.b64decode(str(img_val).strip())
+                            st.image(img_bytes, use_container_width=True)
+                            has_image = True
+                        except Exception:
+                            st.caption("ℹ️ Fénykép megjelenítési hiba.")
+                
+                # Utólagos fényképfeltöltés opció
+                if not has_image:
+                    st.warning("⚠️ Hiányzik a fénykép!")
+                    st.link_button("📷 Fénykép pótlása a Táblázatban", TABLAZAT_LINK)
+                
+                # Link gomb
+                link_val = row.get('Auto_Data_Link', '')
+                if pd.notna(link_val) and str(link_val).startswith("http"):
+                    st.link_button("📊 Technikai adatok / Részletek", str(link_val))
+                else:
+                    st.link_button("🔗 Link hozzáadása", TABLAZAT_LINK)
+                
+                st.markdown("---")
+                megjelenitett_autok += 1
